@@ -17,5 +17,5 @@ mod ongoing_swaps;
 mod publish;
 
 fn main() {
-    println!("Hello, world!");
+    println!("Time to make some ambrosia!");
 }
