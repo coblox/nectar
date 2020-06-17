@@ -30,21 +30,20 @@ pub trait WorthIn<Asset> {
     fn worth_in(&self, conversion_rate: f64) -> anyhow::Result<Asset>;
 }
 
-/// Contains a positive percentage value expressed in ratio: 1 is 100%
-/// To avoid human errors, the max value is 1.
-struct Spread(f64);
+/// Spread: percentage to be added on top of a rate or amount with
+/// a maximum precision of 2 decimals
+struct Spread {
+    integer: u32,
+    decimal: u8,
+}
 
 impl Spread {
-    pub fn new(spread: f64) -> Result<Spread, ()> {
-        if spread.is_sign_positive() && spread <= 1.0 {
-            Ok(Spread(spread))
-        } else {
-            Err(())
-        }
+    pub fn new(spread: f64) -> anyhow::Result<Spread> {
+        todo!()
     }
 
     pub fn apply(&self, base_rate: f64) -> f64 {
-        base_rate * (1.0 + self.0)
+        todo!()
     }
 }
 
