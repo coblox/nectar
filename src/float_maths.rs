@@ -1,5 +1,5 @@
 use bitcoin::hashes::core::cmp::Ordering;
-use num::BigUint;
+use num::{BigUint, Zero};
 use std::str::FromStr;
 
 /// Truncate the float's mantissa to length `precision`.
@@ -62,6 +62,22 @@ pub fn multiple_pow_ten(float: f64, pow: u16) -> anyhow::Result<BigUint> {
     }
 }
 
+/// Divide BigUint by 10e`-inv_pow`, Returns as a BigUint.
+/// Result is truncated
+pub fn divide_pow_ten_trunc(uint: BigUint, inv_pow: u16) -> BigUint {
+    let mut uint_str = uint.to_string();
+    let inv_pow = inv_pow as usize;
+
+    match uint_str.len().cmp(&inv_pow) {
+        Ordering::Less => BigUint::zero(),
+        Ordering::Equal => uint,
+        Ordering::Greater => {
+            uint_str.truncate(uint_str.len() - inv_pow);
+            BigUint::from_str(&uint_str).expect("still an integer")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,7 +93,7 @@ mod tests {
     proptest! {
         #[test]
         fn truncate_doesnt_panic(f in any::<f64>(), p in any::<u16>()) {
-               truncate(f, p);
+            truncate(f, p);
         }
     }
 
@@ -133,7 +149,36 @@ mod tests {
     proptest! {
         #[test]
         fn multiple_pow_ten_doesnt_panic(f in any::<f64>(), p in any::<u16>()) {
-               let _ = multiple_pow_ten(f, p);
+            let _ = multiple_pow_ten(f, p);
+        }
+    }
+
+    #[test]
+    fn given_too_precise_uint_it_truncates() {
+        let uint = BigUint::from(1_000_000_001u64);
+        let pow = 6;
+        assert_eq!(divide_pow_ten_trunc(uint, pow), BigUint::from(1_000u64))
+    }
+
+    #[test]
+    fn given_not_that_precise_uint_it_doesnt_truncate() {
+        let uint = BigUint::from(1_234_000_000u64);
+        let pow = 6;
+        assert_eq!(divide_pow_ten_trunc(uint, pow), BigUint::from(1_234u64))
+    }
+
+    #[test]
+    fn given_pow_zero_it_doesnt_modifies() {
+        let uint = BigUint::from(1_234_456_789u64);
+        let pow = 0;
+        assert_eq!(divide_pow_ten_trunc(uint.clone(), pow), uint)
+    }
+
+    proptest! {
+        #[test]
+        fn divide_pow_ten_trunc_doesnt_panic(s in "[0-9]{1,99}", p in any::<u16>()) {
+            let u = BigUint::from_str(&s).unwrap();
+            let _ = divide_pow_ten_trunc(u, p);
         }
     }
 }

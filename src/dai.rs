@@ -1,6 +1,7 @@
-use crate::float_maths::{multiple_pow_ten, truncate};
+use crate::bitcoin::{self, SATS_IN_BITCOIN_EXP};
+use crate::float_maths::{divide_pow_ten_trunc, multiple_pow_ten, truncate};
 use crate::publish::WorthIn;
-use num::{pow::Pow, BigUint};
+use num::{pow::Pow, BigUint, ToPrimitive};
 use std::ops::{Div, Mul};
 
 pub const ATTOS_IN_DAI_EXP: u16 = 18;
@@ -57,10 +58,44 @@ impl std::fmt::Display for Amount {
 }
 
 impl WorthIn<crate::bitcoin::Amount> for Amount {
-    const MAX_PRECISION_EXP: u16 = 9;
+    const MAX_PRECISION_EXP: u16 = 6;
 
-    fn worth_in(&self, _rhs: f64) -> anyhow::Result<crate::bitcoin::Amount> {
-        unimplemented!()
+    fn worth_in(&self, dai_to_btc_rate: f64) -> anyhow::Result<bitcoin::Amount> {
+        if dai_to_btc_rate.is_sign_negative() {
+            anyhow::bail!("Rate is negative.");
+        }
+
+        if dai_to_btc_rate <= 10e-10 {
+            anyhow::bail!("Rate is null.");
+        }
+
+        if dai_to_btc_rate.is_infinite() {
+            anyhow::bail!("Rate is infinite.");
+        }
+
+        let uint_rate =
+            multiple_pow_ten(dai_to_btc_rate, Self::MAX_PRECISION_EXP).map_err(|_| {
+                anyhow::anyhow!("Rate's precision is too high, truncation would ensue.")
+            })?;
+
+        // Apply the rate
+        let worth = uint_rate * self.as_atto();
+
+        // The rate input is for dai to bitcoin but we applied it to attodai so we need to:
+        // - divide to get dai
+        // - divide to adjust for max_precision
+        // - multiple to get satoshis
+        // Note that we are doing the inverse of that to then pass it to divide_pow_ten_trunc
+        let inv_adjustment_exp = Self::MAX_PRECISION_EXP + ATTOS_IN_DAI_EXP - SATS_IN_BITCOIN_EXP;
+
+        // We may truncate here if self contains an attodai amount which is too precise
+        let sats = divide_pow_ten_trunc(worth, inv_adjustment_exp);
+
+        let sats = sats
+            .to_u64()
+            .ok_or_else(|| anyhow::anyhow!("Result is unexpectedly large"))?;
+
+        Ok(bitcoin::Amount::from_sat(sats))
     }
 }
 
@@ -97,6 +132,24 @@ mod tests {
 mod proptests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn using_too_precise_rate_returns_error() {
+        let dai = Amount::from_dai_trunc(1.0).unwrap();
+
+        let res: anyhow::Result<bitcoin::Amount> = dai.worth_in(0.1234567);
+
+        assert!(res.is_err())
+    }
+
+    #[test]
+    fn using_rate_returns_correct_result() {
+        let dai = Amount::from_dai_trunc(1.0).unwrap();
+
+        let res: bitcoin::Amount = dai.worth_in(0.001234).unwrap();
+
+        assert_eq!(res, bitcoin::Amount::from_btc(0.001234).unwrap());
+    }
 
     proptest! {
         #[test]
