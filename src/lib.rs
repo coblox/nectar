@@ -27,7 +27,7 @@ pub mod jsonrpc;
 pub mod maker;
 pub mod mid_market_rate;
 pub mod network;
-pub mod ongoing_swaps;
+pub mod ongoing_takers;
 pub mod order;
 pub mod rate;
 pub mod seed;
@@ -35,6 +35,7 @@ pub mod swap;
 
 pub use maker::Maker;
 pub use mid_market_rate::MidMarketRate;
+pub use ongoing_takers::OngoingTakers;
 pub use rate::{Rate, Spread};
 pub use seed::Seed;
 
