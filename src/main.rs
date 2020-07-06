@@ -60,13 +60,17 @@ async fn init_maker(
 
 #[tokio::main]
 async fn main() {
-    // TODO: from config or hardcoded
-    let dai_contract_addr: comit::ethereum::Address = unimplemented!();
+    let dai_contract_addr: comit::ethereum::Address = todo!("from config?");
 
     // TODO: Proper wallet initialisation from config
-    let bitcoin_wallet =
-        bitcoin_wallet::Wallet::new(unimplemented!(), unimplemented!(), unimplemented!()).unwrap();
-    let ethereum_wallet = ethereum_wallet::Wallet::new(unimplemented!(), unimplemented!()).unwrap();
+    let bitcoin_wallet = bitcoin_wallet::Wallet::new(
+        todo!("from config"),
+        todo!("from config"),
+        todo!("from config"),
+    )
+    .unwrap();
+    let ethereum_wallet =
+        ethereum_wallet::Wallet::new(todo!("from config"), todo!("from config")).unwrap();
 
     let maker = init_maker(bitcoin_wallet, ethereum_wallet).await;
 
