@@ -2,28 +2,24 @@
 #![recursion_limit = "256"]
 
 use anyhow::Context;
-use comit::{hbit, herc20};
-use futures::channel::mpsc::{Receiver, Sender};
-use futures::FutureExt;
-use futures::StreamExt;
-use futures::{Future, SinkExt};
+use futures::{
+    channel::mpsc::{Receiver, Sender},
+    Future, FutureExt, SinkExt, StreamExt,
+};
 use futures_timer::Delay;
-use nectar::config::settings;
-use nectar::maker::Free;
-use nectar::maker::PublishOrders;
-use nectar::network::Taker;
-use nectar::order::Position;
 use nectar::{
     bitcoin, bitcoin_wallet, config,
-    config::Settings,
+    config::{settings, Settings},
     dai, ethereum_wallet,
-    maker::TakeRequestDecision,
+    maker::{Free, PublishOrders, TakeRequestDecision},
     mid_market_rate::get_btc_dai_mid_market_rate,
-    network::{self, Nectar, Orderbook},
+    network::{self, Nectar, Orderbook, Taker},
     options::{self, Options},
+    order::Position,
+    swap::{self, hbit, herc20, Database, SwapKind},
     Maker, MidMarketRate, Spread,
 };
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use structopt::StructOpt;
 
 const ENSURED_CONSUME_ZERO_BUFFER: usize = 0;
@@ -151,7 +147,7 @@ async fn execute_swap(sender: Sender<FinishedSwap>) -> anyhow::Result<()> {
 
             if let Err(e) = sender
                 .send(FinishedSwap::new(
-                    Free::Btc(beta_params.asset.into()),
+                    Free::Btc(beta_params.shared.asset.into()),
                     taker,
                 ))
                 .await
@@ -331,6 +327,12 @@ async fn main() {
     let (swap_execution_finished_sender, swap_execution_finished_receiver) =
         futures::channel::mpsc::channel::<FinishedSwap>(ENSURED_CONSUME_ZERO_BUFFER);
 
+    let db = Arc::new(Database::new(todo!(
+        "try to load from config, otherwise default?"
+    )));
+
+    todo!("tokio::spawn(respawn_swaps())");
+
     loop {
         futures::select! {
             finished_swap = swap_execution_finished_receiver.next().fuse() => {
@@ -353,6 +355,35 @@ async fn main() {
             }
         }
     }
+}
+
+fn respawn_swaps(
+    db: Arc<Database>,
+    bitcoin_wallet: Arc<bitcoin_wallet::Wallet>,
+    ethereum_wallet: Arc<ethereum_wallet::Wallet>,
+    bitcoin_connector: Arc<comit::btsieve::bitcoin::BitcoindConnector>,
+    ethereum_connector: Arc<comit::btsieve::ethereum::Web3Connector>,
+    swap_execution_finished_sender: Sender<FinishedSwap>,
+) -> anyhow::Result<()> {
+    // Assumption: all swaps in the database are active swaps
+
+    for swap in db.load_all()?.into_iter() {
+        match swap {
+            SwapKind::HbitHerc20(swap) => {
+                tokio::spawn(swap::nectar_hbit_herc20(
+                    Arc::clone(&db),
+                    Arc::clone(&bitcoin_wallet),
+                    Arc::clone(&ethereum_wallet),
+                    Arc::clone(&bitcoin_connector),
+                    Arc::clone(&ethereum_connector),
+                    swap,
+                ));
+            }
+            SwapKind::Herc20Hbit(_) => todo!(),
+        }
+    }
+
+    Ok(())
 }
 
 fn read_config(options: &Options) -> anyhow::Result<config::File> {
