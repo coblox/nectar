@@ -56,6 +56,15 @@ impl Database {
         todo!()
     }
 
+    pub fn delete(&self, swap_id: &SwapId) -> anyhow::Result<()> {
+        let key = swap_id.as_bytes();
+
+        self.db
+            .remove(key)
+            .context(format!("Could not delete swap {}", swap_id))
+            .map(|_| ())
+    }
+
     fn insert(&self, swap_id: &SwapId, swap: &Swap) -> anyhow::Result<()> {
         let key = swap_id.as_bytes();
         // TODO: Consider using https://github.com/3Hren/msgpack-rust instead

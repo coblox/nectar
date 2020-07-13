@@ -17,7 +17,7 @@ use nectar::{
     options::{self, Options},
     order::Position,
     swap::{self, hbit, herc20, Database, SwapKind},
-    Maker, MidMarketRate, Spread,
+    Maker, MidMarketRate, Spread, SwapId,
 };
 use std::{sync::Arc, time::Duration};
 use structopt::StructOpt;
@@ -134,6 +134,7 @@ fn init_dai_balance_updates(
 }
 
 async fn execute_swap(sender: Sender<FinishedSwap>) -> anyhow::Result<()> {
+    let swap_id = SwapId::default();
     let position: Position =
         todo!("decision what kind of what swap it is hbit->herc20 or herc20->hbit");
 
@@ -147,6 +148,7 @@ async fn execute_swap(sender: Sender<FinishedSwap>) -> anyhow::Result<()> {
 
             if let Err(e) = sender
                 .send(FinishedSwap::new(
+                    swap_id,
                     Free::Btc(beta_params.shared.asset.into()),
                     taker,
                 ))
@@ -162,6 +164,7 @@ async fn execute_swap(sender: Sender<FinishedSwap>) -> anyhow::Result<()> {
 
             if let Err(e) = sender
                 .send(FinishedSwap::new(
+                    swap_id,
                     Free::Dai(beta_params.asset.into()),
                     taker,
                 ))
@@ -260,14 +263,31 @@ fn handle_dai_balance_update(
     unimplemented!()
 }
 
+// TODO: I don't think `finished_swap` should be an Option
+fn handle_finished_swap(finished_swap: Option<FinishedSwap>, maker: &mut Maker, db: &Database) {
+    if let Some(finished_swap) = finished_swap {
+        maker.process_finished_swap(finished_swap.funds_to_free, finished_swap.taker);
+
+        let res = db.delete(&finished_swap.swap_id);
+        if let Err(e) = res {
+            tracing::error!(
+                "Unable to fetch latest rate! Fetching rate yielded error: {}",
+                e
+            );
+        }
+    }
+}
+
 struct FinishedSwap {
+    swap_id: SwapId,
     funds_to_free: Free,
     taker: Taker,
 }
 
 impl FinishedSwap {
-    pub fn new(funds_to_free: Free, taker: Taker) -> Self {
+    pub fn new(swap_id: SwapId, funds_to_free: Free, taker: Taker) -> Self {
         Self {
+            swap_id,
             funds_to_free,
             taker,
         }
@@ -329,17 +349,16 @@ async fn main() {
 
     let db = Arc::new(Database::new(todo!(
         "try to load from config, otherwise default?"
-    )));
+    )))
+    .unwrap();
 
     todo!("tokio::spawn(respawn_swaps())");
 
     loop {
         futures::select! {
+            // TODO: I don't think we need to handle the Option
             finished_swap = swap_execution_finished_receiver.next().fuse() => {
-                match finished_swap {
-                    Some(finished_swap) => maker.process_finished_swap(finished_swap.funds_to_free, finished_swap.taker),
-                    None => ()
-                }
+                handle_finished_swap(finished_swap, &mut maker, &db);
             },
             network_event = swarm.next().fuse() => {
                 handle_network_event(network_event, &mut maker, &mut swarm, swap_execution_finished_sender.clone());
@@ -357,6 +376,7 @@ async fn main() {
     }
 }
 
+#[allow(dead_code)]
 fn respawn_swaps(
     db: Arc<Database>,
     bitcoin_wallet: Arc<bitcoin_wallet::Wallet>,
@@ -365,8 +385,6 @@ fn respawn_swaps(
     ethereum_connector: Arc<comit::btsieve::ethereum::Web3Connector>,
     swap_execution_finished_sender: Sender<FinishedSwap>,
 ) -> anyhow::Result<()> {
-    // Assumption: all swaps in the database are active swaps
-
     for swap in db.load_all()?.into_iter() {
         match swap {
             SwapKind::HbitHerc20(swap) => {
