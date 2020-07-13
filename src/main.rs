@@ -338,7 +338,7 @@ fn handle_finished_swap(finished_swap: Option<FinishedSwap>, maker: &mut Maker, 
         maker.process_finished_swap(finished_swap.funds_to_free, finished_swap.taker);
         // TODO: Save to history.csv
 
-        let res = db.delete(&finished_swap.swap_id);
+        let res = db.remove(&finished_swap.swap_id);
         if let Err(e) = res {
             tracing::error!(
                 "Unable to fetch latest rate! Fetching rate yielded error: {}",
