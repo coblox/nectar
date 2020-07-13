@@ -419,7 +419,7 @@ mod tests {
 
         let alice_swap = {
             let swap_id = SwapId::default();
-            alice_db.save(db::Created, swap_id).await.unwrap();
+            alice_db.save(db::Created, swap_id).unwrap();
 
             let alice = WalletAlice {
                 alpha_wallet: alice_bitcoin_wallet.clone(),
@@ -447,7 +447,7 @@ mod tests {
 
         let bob_swap = {
             let swap_id = SwapId::default();
-            bob_db.save(db::Created, swap_id).await.unwrap();
+            bob_db.save(db::Created, swap_id).unwrap();
 
             let alice = WatchOnlyAlice {
                 alpha_connector: Arc::clone(&bitcoin_connector),
