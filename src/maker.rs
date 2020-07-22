@@ -746,3 +746,127 @@ mod tests {
         assert_eq!(new_buy_order.quote.amount, dai_amount(18.0));
     }
 }
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use crate::ethereum::ChainId;
+    use crate::rate::Rate;
+    use libp2p::PeerId;
+    use std::convert::TryFrom;
+
+    fn btc(btc: f64) -> bitcoin::Amount {
+        bitcoin::Amount::from_btc(btc).unwrap()
+    }
+
+    fn btc_asset(amount: f64) -> bitcoin::Asset {
+        bitcoin::Asset {
+            amount: btc(amount),
+            network: bitcoin::Network::Bitcoin,
+        }
+    }
+
+    fn dai_amount(dai: f64) -> dai::Amount {
+        dai::Amount::from_dai_trunc(dai).unwrap()
+    }
+
+    fn some_btc(btc: f64) -> Option<bitcoin::Amount> {
+        Some(bitcoin::Amount::from_btc(btc).unwrap())
+    }
+
+    fn some_dai(dai: f64) -> Option<dai::Amount> {
+        Some(dai::Amount::from_dai_trunc(dai).unwrap())
+    }
+
+    fn some_rate(rate: f64) -> Option<MidMarketRate> {
+        Some(MidMarketRate::new(Rate::try_from(rate).unwrap()))
+    }
+
+    fn spread(spread: u16) -> Spread {
+        Spread::new(spread).unwrap()
+    }
+
+    fn dai_asset(amount: dai::Amount) -> dai::Asset {
+        dai::Asset {
+            amount,
+            contract_address: DaiContractAddress::Mainnet,
+            chain_id: ChainId::mainnet(),
+        }
+    }
+
+    #[test]
+    fn take_order_update_balance() {
+        // init maker
+
+        let initial_mid_market_rate = some_rate(9000.0);
+        let mut maker = Maker::new(
+            btc(3.0),
+            dai_amount(27_000.0),
+            btc(0.0001),
+            some_btc(1.0001),
+            some_dai(8_550.0),
+            initial_mid_market_rate.unwrap(),
+            Spread::new(500).unwrap(),
+            DaiContractAddress::Mainnet,
+            bitcoin::Network::Bitcoin,
+            ethereum::ChainId::mainnet(),
+        );
+
+        let initial_buy_order = maker.new_buy_order().unwrap();
+        let initial_sell_order = maker.new_sell_order().unwrap();
+
+        let expected_initial_buy_order = BtcDaiOrder {
+            position: Position::Buy,
+            base: btc_asset(1.0), // profitable_rate = 8550, base_amount = 8550 / 8550
+            quote: dai_asset(dai_amount(8_550.0)),
+        };
+        let expected_initial_sell_order = BtcDaiOrder {
+            position: Position::Sell,
+            base: btc_asset(1.0),                  // deduct fee
+            quote: dai_asset(dai_amount(9_450.0)), // profitable_rate = 9450, quote_amount = 0.9999 * 9450
+        };
+
+        assert_eq!(initial_buy_order, expected_initial_buy_order);
+        assert_eq!(initial_sell_order, expected_initial_sell_order);
+
+        // take request for the initial SELL order
+        let taker_order = TakenOrder {
+            inner: initial_sell_order.clone(),
+            taker: Taker::new(PeerId::random()),
+        };
+
+        let result = maker.process_taken_order(taker_order).unwrap();
+
+        assert_eq!(result, TakeRequestDecision::GoForSwap);
+
+        let new_sell_order = maker.new_sell_order().unwrap();
+        let new_buy_order = maker.new_buy_order().unwrap();
+
+        // We still have enough more funds than max available on both sides, thus the orders should still be the same.
+        assert_eq!(new_buy_order, initial_buy_order);
+        assert_eq!(new_sell_order, initial_sell_order);
+
+        // take request for the initial BUY order
+        let taker_order = TakenOrder {
+            inner: initial_buy_order.clone(),
+            taker: Taker::new(PeerId::random()),
+        };
+
+        let result = maker.process_taken_order(taker_order).unwrap();
+
+        assert_eq!(result, TakeRequestDecision::GoForSwap);
+
+        let new_sell_order = maker.new_sell_order().unwrap();
+        let new_buy_order = maker.new_buy_order().unwrap();
+
+        // We still have enough more funds than max available on both sides, thus the orders should still be the same.
+        assert_eq!(new_buy_order, initial_buy_order);
+        assert_eq!(new_sell_order, initial_sell_order);
+
+        // TODO take another sell and assert on new sell order (less than max amount)
+
+        // TODO take another buy and assert on buy sell order (since we don't handle fees should still be max amount)
+
+        // TODO simulate balance change(s) after a swap and assert on order(s)
+    }
+}
