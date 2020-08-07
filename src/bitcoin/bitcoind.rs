@@ -54,6 +54,7 @@ impl Client {
             ))
             .await
             .context("failed to create wallet")?;
+
         Ok(response)
     }
 
@@ -334,7 +335,8 @@ pub struct WalletInfoResponse {
     #[serde(rename = "paytxfee")]
     pub pay_tx_fee: f64,
     #[serde(rename = "hdseedid")]
-    pub hd_seed_id: Option<String>, // Hash 160
+    pub hd_seed_id: Option<String>,
+    // Hash 160
     pub private_keys_enabled: bool,
     pub avoid_reuse: bool,
     pub scanning: ScanProgress,
@@ -418,7 +420,7 @@ mod test {
                 hd_seed_id: Some("4959e065fd8e278e4ffe62254897ddac18b02674".into()),
                 private_keys_enabled: true,
                 avoid_reuse: false,
-                scanning: ScanProgress::Bool(false)
+                scanning: ScanProgress::Bool(false),
             }
         )
     }

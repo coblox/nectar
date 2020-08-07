@@ -62,7 +62,7 @@ pub async fn trade(
 
     let update_interval = Duration::from_secs(15u64);
 
-    let (rate_future, mut rate_update_receiver) = init_rate_updates(update_interval);
+    let (rate_future, mut rate_update_receiver) = init_rate_updates(Duration::from_secs(600));
     let (btc_balance_future, mut btc_balance_update_receiver) =
         init_bitcoin_balance_updates(update_interval, Arc::clone(&bitcoin_wallet));
     let (dai_balance_future, mut dai_balance_update_receiver) =
@@ -101,18 +101,23 @@ pub async fn trade(
                     handle_finished_swap(finished_swap, &mut maker, &db, &mut history, &mut swarm).await;
                 }
             },
-            network_event = swarm.as_inner().next().fuse() => {
-                handle_network_event(
-                    network_event,
-                    &mut maker,
-                    &mut swarm,
-                    Arc::clone(&db),
-                    Arc::clone(&bitcoin_wallet),
-                    Arc::clone(&ethereum_wallet),
-                    Arc::clone(&bitcoin_connector),
-                    Arc::clone(&ethereum_connector),
-                    swap_execution_finished_sender.clone(),
-                ).await;
+            swarm_event = swarm.as_inner().next_event().fuse() => {
+                match swarm_event {
+                    libp2p::swarm::SwarmEvent::Behaviour(behaviour_event) => {
+                        handle_network_event(
+                            behaviour_event,
+                            &mut maker,
+                            &mut swarm,
+                            Arc::clone(&db),
+                            Arc::clone(&bitcoin_wallet),
+                            Arc::clone(&ethereum_wallet),
+                            Arc::clone(&bitcoin_connector),
+                            Arc::clone(&ethereum_connector),
+                            swap_execution_finished_sender.clone(),
+                        ).await;
+                    }
+                    other_network_event => tracing::info!("{:?}", other_network_event)
+                }
             },
             rate_update = rate_update_receiver.next().fuse() => {
                 handle_rate_update(rate_update.unwrap(), &mut maker, &mut swarm);
@@ -357,8 +362,14 @@ async fn handle_network_event(
                         Err(e) => tracing::error!("Error when trying to create order: {}", e),
                     }
                 }
-                Ok(TakeRequestDecision::RateNotProfitable)
-                | Ok(TakeRequestDecision::InsufficientFunds) => swarm.deny(order),
+                Ok(TakeRequestDecision::RateNotProfitable) => {
+                    tracing::info!("Order take request refused because order rate not profitable.");
+                    swarm.deny(order)
+                }
+                Ok(TakeRequestDecision::InsufficientFunds) => {
+                    tracing::warn!("Order take request refused insufficient funds.");
+                    swarm.deny(order)
+                }
                 Err(e) => {
                     tracing::error!("Processing taken order yielded error: {}", e);
                     swarm.deny(order)

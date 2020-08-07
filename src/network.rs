@@ -33,6 +33,7 @@ use std::{
 
 use crate::swap::Database;
 use std::sync::Arc;
+use tokio::runtime::Handle;
 
 #[derive(derivative::Derivative)]
 #[derivative(Debug)]
@@ -52,6 +53,7 @@ impl Swarm {
 
         let local_key_pair = derive_key_pair(seed);
         let local_peer_id = PeerId::from(local_key_pair.public());
+        tracing::info!("Started with peer-id: {}", local_peer_id);
 
         let transport = transport::build_transport(local_key_pair)?;
 
@@ -60,7 +62,7 @@ impl Swarm {
         let mut swarm =
             libp2p::swarm::SwarmBuilder::new(transport, behaviour, local_peer_id.clone())
                 .executor(Box::new(TokioExecutor {
-                    handle: tokio::runtime::Handle::current(),
+                    handle: Handle::current(),
                 }))
                 .build();
         for addr in settings.network.listen.clone() {
@@ -144,6 +146,36 @@ impl From<SwapId> for crate::SwapId {
     }
 }
 
+struct CurrentOrders {
+    current_sell_order: Option<OrderId>,
+    current_buy_order: Option<OrderId>,
+}
+
+impl CurrentOrders {
+    pub fn set(&mut self, position: Position, order_id: OrderId) {
+        match position {
+            Position::Buy => self.current_buy_order = Some(order_id),
+            Position::Sell => self.current_sell_order = Some(order_id),
+        }
+    }
+
+    // pub fn get(&self, position: Position) -> Option<OrderId> {
+    //     match position {
+    //         Position::Buy => self.current_buy_order,
+    //         Position::Sell => self.current_sell_order,
+    //     }
+    // }
+}
+
+impl Default for CurrentOrders {
+    fn default() -> Self {
+        Self {
+            current_sell_order: None,
+            current_buy_order: None,
+        }
+    }
+}
+
 /// A `NetworkBehaviour` that delegates to the `Orderbook` and `Comit` behaviours.
 #[derive(NetworkBehaviour)]
 #[behaviour(out_event = "Event", poll_method = "poll")]
@@ -151,38 +183,47 @@ impl From<SwapId> for crate::SwapId {
 pub struct Nectar {
     comit: Comit,
     orderbook: Orderbook,
+
     #[behaviour(ignore)]
     events: VecDeque<Event>,
-    #[behaviour(ignore)]
-    local_peer_id: PeerId,
     #[behaviour(ignore)]
     takers: HashMap<OrderId, PeerId>,
     #[behaviour(ignore)]
     database: Arc<Database>,
     #[behaviour(ignore)]
-    order_ids: HashMap<SharedSwapId, OrderId>,
+    shared_swap_id_to_order_id: HashMap<SharedSwapId, OrderId>,
+    #[behaviour(ignore)]
+    current_orders: CurrentOrders,
     #[behaviour(ignore)]
     local_identities: HashMap<SharedSwapId, LocalIdentities>,
 }
 
 impl Nectar {
     fn new(local_peer_id: PeerId, database: Arc<Database>) -> Self {
+        tracing::info!("Started with peer-id: {}", local_peer_id);
         Self {
             comit: Comit::default(),
-            orderbook: Orderbook::new(local_peer_id.clone()),
+            orderbook: Orderbook::new(local_peer_id),
             events: VecDeque::new(),
-            local_peer_id,
             takers: HashMap::new(),
             database,
-            order_ids: HashMap::new(),
+            shared_swap_id_to_order_id: HashMap::new(),
             local_identities: HashMap::new(),
+            current_orders: CurrentOrders::default(),
         }
     }
 
     fn make(&mut self, order: PublishOrder) -> anyhow::Result<()> {
-        let order_id = OrderId::random();
-        let order = order.into_orderbook_order(order_id, self.local_peer_id.clone());
-        let _ = self.orderbook.make(order)?;
+        let position = order.0.position;
+        let order = order.into_orderbook_order();
+
+        // TODO: Evaluate using replace of Orders here
+        // if let Some(current_order_id) = self.current_orders.get(position) {
+        //     self.orderbook.cancel(current_order_id);
+        // }
+
+        self.current_orders
+            .set(position, self.orderbook.make(order));
 
         Ok(())
     }
@@ -291,7 +332,12 @@ impl NetworkBehaviourEventProcess<orderbook::BehaviourOutEvent> for Nectar {
                     return;
                 }
 
-                let order = match self.orderbook.get_order(&order_id) {
+                let order = match self
+                    .orderbook
+                    .orders()
+                    .ours()
+                    .find(|order| order.id == order_id)
+                {
                     Some(order) => order,
                     None => {
                         tracing::warn!(
@@ -305,7 +351,7 @@ impl NetworkBehaviourEventProcess<orderbook::BehaviourOutEvent> for Nectar {
 
                 self.takers.insert(order_id, taker.peer_id.clone());
 
-                let taken_order = TakenOrder::new(order, taker, response_channel);
+                let taken_order = TakenOrder::new(order.clone(), taker, response_channel);
                 self.events.push_back(Event::TakeRequest(taken_order))
             }
             orderbook::BehaviourOutEvent::TakeOrderConfirmation {
@@ -315,7 +361,8 @@ impl NetworkBehaviourEventProcess<orderbook::BehaviourOutEvent> for Nectar {
             } => {
                 let swap_id = SwapId::new(shared_swap_id);
 
-                self.order_ids.insert(swap_id.shared, order_id);
+                self.shared_swap_id_to_order_id
+                    .insert(swap_id.shared, order_id);
 
                 self.events
                     .push_back(Event::SetSwapIdentities(SwapMetadata {
@@ -369,8 +416,13 @@ impl NetworkBehaviourEventProcess<network::comit::BehaviourOutEvent> for Nectar 
                         }
                     };
 
-                let order = match self.order_ids.get(&shared_swap_id) {
-                    Some(order_id) => match self.orderbook.get_order(order_id) {
+                let order = match self.shared_swap_id_to_order_id.get(&shared_swap_id) {
+                    Some(order_id) => match self
+                        .orderbook
+                        .orders()
+                        .ours()
+                        .find(|order| order.id == *order_id)
+                    {
                         Some(order) => order,
                         None => {
                             tracing::warn!("could not find order with id: {}", order_id);
@@ -414,7 +466,10 @@ impl NetworkBehaviourEventProcess<network::comit::BehaviourOutEvent> for Nectar 
                         );
 
                         let herc20_params = herc20::Params {
-                            asset: asset::Erc20::new(order.token_contract, order.ethereum_amount),
+                            asset: asset::Erc20::new(
+                                order.token_contract,
+                                order.ethereum_amount.clone(),
+                            ),
                             redeem_identity: taker_ethereum_identity,
                             refund_identity: maker_ethereum_identity,
                             expiry: order.ethereum_absolute_expiry.into(),
@@ -451,7 +506,10 @@ impl NetworkBehaviourEventProcess<network::comit::BehaviourOutEvent> for Nectar 
                         );
 
                         let herc20_params = herc20::Params {
-                            asset: asset::Erc20::new(order.token_contract, order.ethereum_amount),
+                            asset: asset::Erc20::new(
+                                order.token_contract,
+                                order.ethereum_amount.clone(),
+                            ),
                             redeem_identity: maker_ethereum_identity,
                             refund_identity: taker_ethereum_identity,
                             expiry: order.ethereum_absolute_expiry.into(),
@@ -491,14 +549,14 @@ pub struct TakenOrder {
     pub id: OrderId,
     pub inner: BtcDaiOrder,
     pub taker: Taker,
-    confirmation_channel: ResponseChannel<take_order::Response>,
+    confirmation_channel: ResponseChannel<take_order::Confirmation>,
 }
 
 impl TakenOrder {
     fn new(
         order: comit::network::orderbook::Order,
         taker: Taker,
-        confirmation_channel: ResponseChannel<take_order::Response>,
+        confirmation_channel: ResponseChannel<take_order::Confirmation>,
     ) -> Self {
         let base = bitcoin::Asset {
             amount: order.bitcoin_amount.into(),
@@ -558,7 +616,7 @@ impl crate::StaticStub for Taker {
 pub struct PublishOrder(BtcDaiOrder);
 
 impl PublishOrder {
-    fn into_orderbook_order(self, id: OrderId, maker: PeerId) -> comit::network::orderbook::Order {
+    fn into_orderbook_order(self) -> comit::network::orderbook::NewOrder {
         // No special logic for expiry generation, other than setting
         // the asset that will be alpha to be longer than the asset
         // that will be beta
@@ -571,9 +629,7 @@ impl PublishOrder {
             Position::Sell => (beta_expiry, alpha_expiry),
         };
 
-        comit::network::orderbook::Order {
-            id,
-            maker: maker.into(),
+        comit::network::orderbook::NewOrder {
             position: self.0.position.into(),
             bitcoin_amount: self.0.base.amount.into(),
             bitcoin_ledger: self.0.base.network.into(),

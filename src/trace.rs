@@ -1,5 +1,5 @@
 use log::LevelFilter;
-use tracing::{info, subscriber, Level};
+use tracing::{info, subscriber};
 use tracing_log::LogTracer;
 use tracing_subscriber::FmtSubscriber;
 
@@ -8,26 +8,14 @@ pub fn init_tracing(level: log::LevelFilter) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // We want upstream library log messages, just only at Info level.
-    LogTracer::init_with_filter(LevelFilter::Info)?;
+    LogTracer::init()?;
 
     let subscriber = FmtSubscriber::builder()
-        .with_max_level(level_from_level_filter(level))
+        .with_env_filter(format!("nectar={},comit={},http=info,warp=info,hyper=info,reqwest=info,want=info,libp2p_gossipsub=info,sled=info,libp2p_core={}", level, level, level))
         .finish();
 
     subscriber::set_global_default(subscriber)?;
     info!("Initialized tracing with level: {}", level);
 
     Ok(())
-}
-
-fn level_from_level_filter(level: LevelFilter) -> Level {
-    match level {
-        LevelFilter::Off => unreachable!(),
-        LevelFilter::Error => Level::ERROR,
-        LevelFilter::Warn => Level::WARN,
-        LevelFilter::Info => Level::INFO,
-        LevelFilter::Debug => Level::DEBUG,
-        LevelFilter::Trace => Level::TRACE,
-    }
 }
